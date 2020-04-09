@@ -3,12 +3,14 @@
 #
 import asyncio
 from asyncio import transports
+import time
 
 
 class ServerProtocol(asyncio.Protocol):
     login: str = None
     server: 'Server'
     transport: transports.Transport
+    qty_history_messages = 10
 
     def __init__(self, server: 'Server'):
         self.server = server
@@ -17,17 +19,33 @@ class ServerProtocol(asyncio.Protocol):
         print(data)
 
         decoded = data.decode()
+        if decoded.startswith("login:"):
+            incoming_login = decoded.replace("login:", "").replace("\r\n", "")
+            for client in self.server.clients:
+                print(f"Онлайн сейчас: {client.login}")
+                if incoming_login == client.login:
+                    self.transport.write(f"Логин {client.login} занят, попробуйте другой".encode())
+                    time.sleep(5)  # Сон в 5 секунды
+                    self.transport.close()
 
-        if self.login is not None:
-            self.send_message(decoded)
+            self.login = incoming_login
+            self.transport.write(
+                f"Привет, {self.login}!\n".encode()
+            )
+            if self.server.history_messages:
+                self.send_history(self.qty_history_messages)
+
         else:
-            if decoded.startswith("login:"):
-                self.login = decoded.replace("login:", "").replace("\r\n", "")
-                self.transport.write(
-                    f"Привет, {self.login}!\n".encode()
-                )
+            if self.login is not None:
+                self.send_message(decoded)
             else:
                 self.transport.write("Неправильный логин\n".encode())
+
+    def send_history(self, number: int):
+        self.transport.write(f"Последние {number} сообщения в чате:\n".encode())
+        for index, message in enumerate(self.server.history_messages):
+            if (index + 1) <= number:
+                self.transport.write(message.encode())
 
     def connection_made(self, transport: transports.Transport):
         self.server.clients.append(self)
@@ -40,16 +58,20 @@ class ServerProtocol(asyncio.Protocol):
 
     def send_message(self, content: str):
         message = f"{self.login}: {content}"
+        self.server.history_messages.append(message)
 
         for user in self.server.clients:
-            user.transport.write(message.encode())
+            if user.login is not None:
+                user.transport.write(message.encode())
 
 
 class Server:
+    history_messages: list
     clients: list
 
     def __init__(self):
         self.clients = []
+        self.history_messages = []
 
     def build_protocol(self):
         return ServerProtocol(self)
